@@ -9,6 +9,7 @@ setup() {
   export STUB_CASE=delayed
   export STUB_TX_ID=1d080abd7c56054a8d48dc61cc8a8bae0d8bbb9af1cd09a79828714ae56665e7
   export STUB_PAYOUT_ID=dc1563fb-05a3-4390-8f21-0526cff17a8b
+  export STUB_UNRELATED_TX_ID=7f3c1e0a9b2d4c6e8f0a1b3c5d7e9f1a2b4c6d8e0f1a3b5c7d9e1f2a4b6c8d0e
   fixture="$BATS_TEST_TMPDIR/cron.bats"
   awk -v helpers="$repo_root/bats/helpers" '
     /^load / { sub(/\.\.\/\.\.\/helpers/, helpers) }
@@ -51,7 +52,10 @@ bria_cli() {
     'import-xpub '*|'create-wallet '*) return 0 ;;
     'watch-events -o') printf '{"sequence":1}\n' ;;
     'get-payout -i old') echo 'Stale payout must not be selected' >&2; return 1 ;;
-    'get-payout -i unrelated') printf '{"payout":{"id":"unrelated","metadata":{}}}\n' ;;
+    # A broadcast payout with a valid txId that is not a cold-wallet rebalance.
+    'get-payout -i unrelated')
+      printf '{"payout":{"id":"unrelated","txId":"%s","metadata":{"galoy":{"rebalance":true}}}}\n' "$STUB_UNRELATED_TX_ID"
+      ;;
     "get-payout -i $STUB_PAYOUT_ID")
       printf '{"payout":{"id":"%s","txId":"%s","metadata":{"galoy":{"rebalanceToColdWallet":true}}}}\n' "$STUB_PAYOUT_ID" "$STUB_TX_ID"
       ;;
@@ -64,9 +68,12 @@ bria_cli() {
   esac
 }
 mongo_cli() {
-  [[ "$*" == *"hash:'$STUB_TX_ID'"* && "$*" == *"type:'to_cold_storage'"* && "$*" == *'pending:false'* ]] || {
+  [[ "$*" == *"type:'to_cold_storage'"* && "$*" == *'pending:false'* && "$*" == *'voided:{$ne:true}'* ]] || {
     echo "Wrong ledger query: $*" >&2; return 1;
   }
+  # A complete journal for the wrong payout must not release mining.
+  [[ "$*" == *"hash:'$STUB_UNRELATED_TX_ID'"* ]] && { printf '3\n'; return 0; }
+  [[ "$*" == *"hash:'$STUB_TX_ID'"* ]] || { echo "Wrong ledger hash: $*" >&2; return 1; }
   local tick
   tick=$(< "$STUB_DIR/tick")
   if [[ "$tick" -ge 4 && "$STUB_CASE" != never_journal ]]; then
