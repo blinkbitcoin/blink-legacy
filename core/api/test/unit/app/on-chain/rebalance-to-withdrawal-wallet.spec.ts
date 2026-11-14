@@ -3,6 +3,9 @@ const mockSubmit = jest.fn()
 const mockUsing = jest.fn()
 const mockPersistEvent = jest.fn()
 const mockSettle = jest.fn()
+const mockLogError = jest.fn()
+const mockLogWarn = jest.fn()
+const mockRecordException = jest.fn()
 
 jest.mock("@/config", () => {
   const config = {
@@ -44,14 +47,18 @@ jest.mock("@/app", () => ({
 jest.mock("@/services/ledger/facade", () => ({}))
 jest.mock("@/services/api-keys", () => ({ ApiKeysService: () => ({}) }))
 jest.mock("@/services/logger", () => ({
-  baseLogger: { info: jest.fn(), error: jest.fn() },
+  baseLogger: {
+    info: jest.fn(),
+    error: (...args: unknown[]) => mockLogError(...args),
+    warn: (...args: unknown[]) => mockLogWarn(...args),
+  },
 }))
 jest.mock("@/utils", () => ({ GrpcStreamClient: {} }))
 jest.mock("@/services/redis", () => ({ redis: {} }))
 jest.mock("@/services/tracing", () => ({
   wrapAsyncFunctionsToRunInSpan: ({ fns }: { fns: unknown }) => fns,
   addAttributesToCurrentSpan: jest.fn(),
-  recordExceptionInCurrentSpan: jest.fn(),
+  recordExceptionInCurrentSpan: (...args: unknown[]) => mockRecordException(...args),
 }))
 jest.mock("redlock", () => {
   class ExecutionError extends Error {}
@@ -73,8 +80,9 @@ import { UnknownOnChainServiceError } from "@/domain/bitcoin/onchain"
 import {
   ResourceAttemptsRedlockServiceError,
   ResourceExpiredLockServiceError,
+  UnknownLockServiceError,
 } from "@/domain/lock"
-import { BigIntFloatConversionError } from "@/domain/shared"
+import { BigIntFloatConversionError, ErrorLevel } from "@/domain/shared"
 import { OnChainService } from "@/services/bria"
 import { eventDataHandler } from "@/services/bria/event-handler"
 import { briaEventHandler } from "@/servers/event-handlers/bria"
@@ -398,4 +406,50 @@ it("still acknowledges settlement when a non-lock rebalance error is reported", 
   await eventDataHandler(briaEventHandler)(stream, settledEvent(1))
   expect(mockPersistEvent).toHaveBeenCalledTimes(1)
   expect(stream.reconnect).not.toHaveBeenCalled()
+})
+
+it.each([
+  {
+    name: "expected acquisition contention as a warning",
+    failure: () => new ExecutionError("acquisition retries exhausted", []),
+    error: ResourceAttemptsRedlockServiceError,
+    level: ErrorLevel.Warn,
+  },
+  {
+    name: "an unexpected lock failure as critical",
+    failure: () => new Error("redis unavailable"),
+    error: UnknownLockServiceError,
+    level: ErrorLevel.Critical,
+  },
+])(
+  "reports $name while leaving the event for replay",
+  async ({ failure, error, level }) => {
+    mockUsing.mockRejectedValueOnce(failure())
+    const stream = testStream()
+    await eventDataHandler(briaEventHandler)(stream, settledEvent(3))
+
+    expect(mockPersistEvent).not.toHaveBeenCalled()
+    expect(stream.request.getAfterSequence()).toBe(2)
+    expect(stream.reconnect).toHaveBeenCalledTimes(1)
+    expect(mockRecordException).toHaveBeenCalledWith({
+      error: expect.any(error),
+      level,
+    })
+    expect(mockLogWarn).toHaveBeenCalledTimes(level === ErrorLevel.Warn ? 1 : 0)
+    expect(mockLogError).toHaveBeenCalledTimes(level === ErrorLevel.Critical ? 1 : 0)
+  },
+)
+
+it("keeps non-lock handler failures critical", async () => {
+  mockSettle.mockResolvedValueOnce(new UnknownOnChainServiceError("ledger unavailable"))
+  const stream = testStream()
+  await eventDataHandler(briaEventHandler)(stream, settledEvent(4))
+
+  expect(mockPersistEvent).not.toHaveBeenCalled()
+  expect(mockRecordException).toHaveBeenCalledWith({
+    error: expect.any(UnknownOnChainServiceError),
+    level: ErrorLevel.Critical,
+  })
+  expect(mockLogError).toHaveBeenCalledTimes(1)
+  expect(mockLogWarn).not.toHaveBeenCalled()
 })

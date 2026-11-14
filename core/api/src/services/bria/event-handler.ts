@@ -17,6 +17,7 @@ import { BriaEventRepo } from "./event-repository"
 
 import { BriaEvent as RawBriaEvent, SubscribeAllRequest } from "./proto/bria_pb"
 
+import { LockServiceError } from "@/domain/lock"
 import { ErrorLevel, WalletCurrency, paymentAmountFromNumber } from "@/domain/shared"
 
 import { baseLogger } from "@/services/logger"
@@ -57,8 +58,18 @@ export const eventDataHandler =
 
     const result = await eventHandler(event)
     if (result instanceof Error) {
-      baseLogger.error({ error: result, event }, "eventDataHandler error")
-      recordExceptionInCurrentSpan({ error: result, level: ErrorLevel.Critical })
+      // Lock errors declare their own level: finite acquisition under contention is an
+      // expected, self-healing retry (Warn), while lost or unknown locks stay Critical.
+      const level =
+        result instanceof LockServiceError && result.level
+          ? result.level
+          : ErrorLevel.Critical
+      if (level === ErrorLevel.Critical) {
+        baseLogger.error({ error: result, event }, "eventDataHandler error")
+      } else {
+        baseLogger.warn({ error: result, event }, "eventDataHandler retrying event")
+      }
+      recordExceptionInCurrentSpan({ error: result, level })
       stream.request.setAfterSequence(event.sequence - 1)
       stream.reconnect()
       return

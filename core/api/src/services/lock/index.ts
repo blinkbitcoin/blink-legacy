@@ -3,6 +3,7 @@ import Redlock, { ExecutionError } from "redlock"
 import { NETWORK } from "@/config"
 
 import {
+  LockServiceError,
   ResourceAttemptsRedlockServiceError,
   ResourceAttemptsTimelockServiceError,
   ResourceExpiredLockServiceError,
@@ -110,14 +111,23 @@ export const redlock = async <Signal extends RedlockAbortSignal, Ret>({
     return asyncFn(signal)
   }
 
+  // Redlock releases in a finally block. After a lost lease that release fails, and
+  // its error would replace the lock error (and abort reason) the routine returned.
+  const routineOutcome: { lockError?: LockServiceError } = {}
   try {
-    const routine = async (signal: RedlockAbortSignal) => asyncFn(signal as Signal)
+    const routine = async (signal: RedlockAbortSignal) => {
+      const result = await asyncFn(signal as Signal)
+      if (result instanceof LockServiceError) routineOutcome.lockError = result
+      return result
+    }
     return settings === undefined
       ? await redlockClient.using([path], ttl(), routine)
       : await redlockClient.using([path], ttl(), settings, routine)
   } catch (error) {
+    if (routineOutcome.lockError) return routineOutcome.lockError
+
     if (error instanceof ExecutionError) {
-      return new ResourceAttemptsRedlockServiceError()
+      return new ResourceAttemptsRedlockServiceError(error.message)
     }
 
     return new UnknownLockServiceError(parseErrorMessageFromUnknown(error))
