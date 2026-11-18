@@ -74,5 +74,5 @@ resources:
     source:
       uri: git@github.com:GaloyMoney/concourse-locks.git
       branch: main
-      pool: zrh1-docker-hosts
+      pool: docker-hosts-site1
       private_key: #@ data.values.github_private_key

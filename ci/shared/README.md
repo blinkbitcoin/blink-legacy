@@ -1,6 +1,6 @@
 # Dedicated SSH Docker host pool
 
-`blink-core` and `blink-apps` use the separate `zrh1-docker-hosts` pool.
+`blink-core` and `blink-apps` use the separate `docker-hosts-site1` pool.
 The shared `docker-hosts` pool remains for GCP-only consumers. The metadata
 selects direct SSH; absent transport retains the existing GCP implementation.
 

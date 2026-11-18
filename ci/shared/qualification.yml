@@ -103,5 +103,5 @@ resources:
   source:
     uri: git@github.com:blinkbitcoin/concourse-locks.git
     branch: main
-    pool: zrh1-docker-hosts
+    pool: docker-hosts-site1
     private_key: ((github-blinkbitcoin.private_key))

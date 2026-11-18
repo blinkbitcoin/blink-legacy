@@ -575,7 +575,7 @@ class PoolBootstrap(unittest.TestCase):
             (repo / "dirty").touch()
             self.assertNotEqual(bootstrap().returncode, 0)
             (repo / "dirty").unlink()
-            member = repo / "zrh1-docker-hosts/unclaimed/member"
+            member = repo / "docker-hosts-site1/unclaimed/member"
             member.write_text("metadata")
             git("add", str(member))
             git("commit", "-m", "existing member")
